@@ -1,0 +1,6 @@
+docker compose down
+docker compose up -d
+
+npx ts-node src/orchestrator/orchestrator.ts
+
+npx ts-node src/producers/bulkProducer.ts

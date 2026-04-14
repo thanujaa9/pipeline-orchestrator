@@ -16,11 +16,18 @@ export const redisClient = createClient({
 /**
  * Establishes the Redis connection.
  * Must be called before any cache read or write operations.
- * Throws on failure so the calling service can halt cleanly
- * rather than operating with a broken cache layer.
+ *
+ * FIX: Checks isOpen before connecting — prevents 'Socket already
+ * opened' error when multiple services call connectRedis() in the
+ * same process (e.g. consumerManager starting both consumers).
  */
 export async function connectRedis(): Promise<void> {
   try {
+    // If already connected, skip — avoids 'Socket already opened' error
+    if (redisClient.isOpen) {
+      console.log('✅ Redis already connected')
+      return
+    }
     await redisClient.connect()
     console.log('✅ Redis connected successfully')
   } catch (error) {

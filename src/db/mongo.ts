@@ -11,13 +11,15 @@ import { config } from '../config/index'
  * The first matching rule wins — remaining rules are skipped.
  */
 const RuleSchema = new mongoose.Schema({
-  field:       { type: String, required: true },
-  operator:    { type: String, required: true, enum: ['equals', 'contains', 'greaterThan', 'lessThan'] },
-  value:       { type: mongoose.Schema.Types.Mixed, required: true },
-  targetQueue: { type: String, required: true, enum: ['urgent', 'batch'] },
-  priority:    { type: Number, required: true },
+  field:       String,
+  operator:    String,
+  value:       mongoose.Schema.Types.Mixed,
+  targetQueue: String,
+  priority:    Number,
+  category:    String,   // ← NEW: fraud | payment | risk | priority | eventType | region
+  description: String,   // ← NEW: human-readable rule explanation
 })
-
+ 
 /**
  * Mongoose schema for the routing history collection.
  * Every routing decision made by the Orchestrator is persisted
@@ -27,13 +29,26 @@ const RuleSchema = new mongoose.Schema({
  * the routing decision is made — used for performance analysis.
  */
 const RoutingHistorySchema = new mongoose.Schema({
-  messageId:   { type: String, required: true },
-  timestamp:   { type: String, required: true },
-  matchedRule: { type: String, required: true },
-  targetQueue: { type: String, required: true },
-  latencyMs:   { type: Number, required: true },
+  messageId:       String,
+  targetQueue:     String,
+  matchedRule:     String,
+  latencyMs:       Number,
+  timestamp:       Date,
+  processedAt:     String,
+  processedBy:     String,
+  processingTime:  Number,
+  status:          String,
+  // NEW benchmarking fields:
+  benchmarkId:     String,
+  isCritical:      Boolean,
+  messageType:     String,
+  messagePriority: String,
+  messageRegion:   String,
+  riskScore:       Number,
+  amount:          Number,
+  source:          String,
+  userId:          String,
 })
-
 // Exported models — used by the Rule Engine, Orchestrator, and REST API
 export const RuleModel = mongoose.model('Rule', RuleSchema)
 export const RoutingHistoryModel = mongoose.model('RoutingHistory', RoutingHistorySchema)
