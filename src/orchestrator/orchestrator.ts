@@ -5,6 +5,7 @@ import { connectRedis } from '../db/redis'
 import { RuleEngine } from '../ruleEngine/ruleEngine'
 import { Message } from '../models/message.model'
 import { config } from '../config/index'
+import { QUEUE_CONFIG } from '../config/queues'
 
 // ── RabbitMQ connection state ─────────────────────────────────────────
 let rabbitConnection: any = null
@@ -18,16 +19,14 @@ let lastPublishSucceeded = false
  * If connection/channel is null (went down), reconnects first.
  * Retries the connection up to 3 times before giving up.
  *
- * DLQ FIX: urgent.queue now has x-dead-letter-exchange and x-message-ttl.
- * If a message sits in urgent.queue for 30 seconds with no consumer,
- * RabbitMQ automatically moves it to dead.letter.queue.
- * This is the CORRECT way DLQ works — RabbitMQ handles it internally.
+ * Queue args are imported from src/config/queues.ts — the single source
+ * of truth shared by orchestrator AND consumers. This prevents the
+ * PRECONDITION-FAILED 406 error caused by TTL mismatches between files.
  */
 async function getChannel(): Promise<any> {
   if (rabbitChannel && rabbitConnection) {
     return rabbitChannel
   }
-
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`🔄 Connecting to RabbitMQ (attempt ${attempt}/3)...`)
@@ -37,37 +36,22 @@ async function getChannel(): Promise<any> {
 
       // ── Dead Letter Queue ──────────────────────────────────────────
       // Must be asserted FIRST before the queues that reference it
-      await rabbitChannel.assertQueue('dead.letter.queue', {
-        durable: true,
-      })
+      await rabbitChannel.assertQueue(
+        QUEUE_CONFIG.deadLetter.name,
+        QUEUE_CONFIG.deadLetter.options,
+      )
 
       // ── urgent.queue ───────────────────────────────────────────────
-      // x-dead-letter-exchange + x-dead-letter-routing-key:
-      //   When a message expires (TTL) or is rejected, RabbitMQ
-      //   automatically routes it to dead.letter.queue
-      // x-message-ttl: 30000ms = 30 seconds
-      //   If no consumer reads the message within 30s, it expires → DLQ
-      await rabbitChannel.assertQueue('urgent.queue', {
-        durable: true,
-        arguments: {
-          'x-max-priority':            10,
-          'x-dead-letter-exchange':    '',
-          'x-dead-letter-routing-key': 'dead.letter.queue',
-          'x-message-ttl':             30000,
-        },
-      })
+      await rabbitChannel.assertQueue(
+        QUEUE_CONFIG.urgent.name,
+        QUEUE_CONFIG.urgent.options,
+      )
 
       // ── batch.queue ────────────────────────────────────────────────
-      // Same DLQ config — batch messages expire after 60 seconds
-      await rabbitChannel.assertQueue('batch.queue', {
-        durable: true,
-        arguments: {
-          'x-max-priority':            1,
-          'x-dead-letter-exchange':    '',
-          'x-dead-letter-routing-key': 'dead.letter.queue',
-          'x-message-ttl':             60000,
-        },
-      })
+      await rabbitChannel.assertQueue(
+        QUEUE_CONFIG.batch.name,
+        QUEUE_CONFIG.batch.options,
+      )
 
       rabbitConnection.on('close', () => {
         console.warn('⚠️  RabbitMQ connection closed — will reconnect on next message')
@@ -82,9 +66,10 @@ async function getChannel(): Promise<any> {
       })
 
       console.log('✅ RabbitMQ connected and queues ready')
-      console.log('   urgent.queue  — priority 10, TTL 30s → DLQ on expiry')
-      console.log('   batch.queue   — priority 1,  TTL 60s → DLQ on expiry')
-      console.log('   dead.letter.queue — receives expired/failed messages')
+      console.log(`   ${QUEUE_CONFIG.urgent.name}     — priority 10, no TTL → DLQ on rejection`)
+console.log(`   ${QUEUE_CONFIG.batch.name}      — priority 1,  no TTL → DLQ on rejection`)
+
+      console.log(`   ${QUEUE_CONFIG.deadLetter.name} — receives expired/failed messages`)
       return rabbitChannel
 
     } catch (err: any) {
@@ -123,7 +108,7 @@ async function publishWithRetry(
       Buffer.from(JSON.stringify(message)),
       {
         persistent: true,
-        priority:   queue === 'urgent.queue' ? 10 : 1,
+        priority:   queue === QUEUE_CONFIG.urgent.name ? 10 : 1,
       }
     )
 
@@ -139,7 +124,7 @@ async function publishWithRetry(
       try {
         const ch = await getChannel()
         ch.sendToQueue(
-          'dead.letter.queue',
+          QUEUE_CONFIG.deadLetter.name,
           Buffer.from(JSON.stringify({
             originalQueue: queue,
             message,
@@ -182,6 +167,11 @@ async function startOrchestrator(): Promise<void> {
   const kafka = new Kafka({
     clientId: 'orchestrator',
     brokers:  config.KAFKA_BROKERS,
+    requestTimeout: 30000,
+    retry: {
+      initialRetryTime: 300,
+      retries: 8,
+    },
   })
 
   const consumer = kafka.consumer({ groupId: config.KAFKA_GROUP_ID })
@@ -202,7 +192,9 @@ async function startOrchestrator(): Promise<void> {
         parsed.kafkaTimestamp = receivedAt
 
         const targetQueue = await ruleEngine.evaluate(parsed)
-        const queueName   = targetQueue === 'urgent' ? 'urgent.queue' : 'batch.queue'
+        const queueName   = targetQueue === 'urgent'
+          ? QUEUE_CONFIG.urgent.name
+          : QUEUE_CONFIG.batch.name
 
         await publishWithRetry(queueName, parsed)
 
@@ -210,21 +202,22 @@ async function startOrchestrator(): Promise<void> {
           const latencyMs = Date.now() - receivedAt
 
           await RoutingHistoryModel.create({
-  messageId:       parsed.id,
-  timestamp:       new Date().toISOString(),
-  matchedRule:     targetQueue,
-  targetQueue:     queueName,
-  latencyMs,
-  benchmarkId:     parsed.benchmarkId    || null,
-  isCritical:      parsed.isCritical     || false,
-  messageType:     parsed.type           || null,
-  messagePriority: parsed.priority       || null,
-  messageRegion:   parsed.region         || null,
-  riskScore:       parsed.riskScore      || null,
-  amount:          parsed.amount         || null,
-  source:          parsed.source         || null,
-  userId:          parsed.userId         || null,
-})
+            messageId:       parsed.id,
+            timestamp:       new Date().toISOString(),
+            matchedRule:     targetQueue,
+            targetQueue:     queueName,
+            latencyMs,
+            benchmarkId:     parsed.benchmarkId    || null,
+            isCritical:      parsed.isCritical     || false,
+            messageType:     parsed.type           || null,
+            messagePriority: parsed.priority       || null,
+            messageRegion:   parsed.region         || null,
+            riskScore:       parsed.riskScore      || null,
+            amount:          parsed.amount         || null,
+            source:          parsed.source         || null,
+            userId:          parsed.userId         || null,
+          })
+
           console.log(`📨 Message ${parsed.id} → ${queueName} (${latencyMs}ms)`)
         }
 

@@ -4,3 +4,171 @@ docker compose up -d
 npx ts-node src/orchestrator/orchestrator.ts
 
 npx ts-node src/producers/bulkProducer.ts
+
+
+Step 2 — Clear MongoDB
+bashmongosh
+use orchestrator
+db.routinghistories.deleteMany({})
+db.routinghistories.countDocuments()
+exit
+
+Step 3 — Delete all queues
+bashdocker exec -it rabbitmq rabbitmqadmin delete queue name=urgent.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=batch.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=dead.letter.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=naive.queue --username=admin --password=password
+
+Step 4 — Change bulkProducer to 15,000
+typescript// src/benchmark/bulkProducer.ts line 1
+const TOTAL_MESSAGES = 15000
+
+Step 5 — Start services (4 separate terminals)
+bash# Terminal 1 — wait for ✅ RabbitMQ connected + ✅ Rules loaded
+npx ts-node src/orchestrator/orchestrator.ts
+
+# Terminal 2
+npx ts-node src/api/server.ts
+
+# Terminal 3
+npx ts-node src/consumers/consumerManager.ts
+
+# Terminal 4 — open dashboard first: http://localhost:3000
+# Then run:
+npx ts-node src/producers/bulkProducer.ts
+
+Step 6 — Wait for ALL queues to drain
+bash# Keep watching until this shows all zeros:
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# urgent.queue   → 0
+# batch.queue    → 0
+# dead.letter.queue → 0
+
+Step 7 — Run smart system report, save the benchmark ID
+bashnpx ts-node src/benchmark/benchmarkReport.ts
+# Copy the bench-XXXXXXXXXXXXX id printed at the top
+
+Step 8 — Run naive producer
+bashnpx ts-node src/benchmark/naiveProducer.ts
+# Copy the naive-XXXXXXXXXXXXX id printed at the top
+
+Step 9 — Run comparison report
+bashnpx ts-node src/benchmark/comparisonReport.ts bench-XXXXXXXXXXXXX naive-XXXXXXXXXXXXX
+# Replace with your actual IDs from steps 7 and 8
+
+curl -X POST http://localhost:3001/api/test/broken-message
+
+
+
+
+# Step 1 — show DLQ is empty
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# dead.letter.queue → 0
+
+# Step 2 — send broken messages
+for i in 1 2 3 4 5; do
+  curl -X POST http://localhost:3001/api/test/broken-message
+done
+
+# Step 3 — show DLQ filled up
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# dead.letter.queue → 5  ✅
+
+# Step 4 — show dashboard DLQ counter at http://localhost:3000
+# Step 5 — show RabbitMQ UI at http://localhost:15672 → dead.letter.queue → Get Messages
+
+
+
+The DLQ was already empty/deleted. Don't worry about it.
+
+Here are all commands for both DLQ demo cases:
+
+---
+
+## Case 1 — TTL Expiry Demo
+
+```bash
+# Step 1 — Update src/config/queues.ts — add TTL back
+# Change urgent options to:
+'x-message-ttl': 10000,  # 10 seconds only
+
+# Step 2 — Delete and recreate queues
+docker exec -it rabbitmq rabbitmqadmin delete queue name=urgent.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=batch.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=dead.letter.queue --username=admin --password=password
+
+# Step 3 — Start orchestrator only (NO consumers)
+npx ts-node src/orchestrator/orchestrator.ts
+
+# Step 4 — Start API
+npx ts-node src/api/server.ts
+
+# Step 5 — Send messages (no consumers running = messages will expire)
+npx ts-node src/benchmark/bulkProducer.ts
+
+# Step 6 — Wait 10 seconds then check
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# dead.letter.queue → filling up ✅
+
+# Explain to team:
+# "Messages expired after 10s because no consumer was fast enough
+#  RabbitMQ automatically moved them to DLQ"
+```
+
+---
+
+## Case 2 — Broken Message (Consumer Rejection) Demo
+
+```bash
+# Step 1 — Remove TTL from src/config/queues.ts (back to no TTL)
+# Delete queues and restart orchestrator
+
+# Step 2 — Start everything
+npx ts-node src/orchestrator/orchestrator.ts  # T1
+npx ts-node src/api/server.ts                 # T2
+npx ts-node src/consumers/consumerManager.ts  # T3
+
+# Step 3 — Show DLQ is empty
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# dead.letter.queue → 0
+
+# Step 4 — Send 5 broken messages
+for i in 1 2 3 4 5; do
+  curl -X POST http://localhost:3001/api/test/broken-message
+  echo "sent $i"
+done
+
+# Step 5 — Watch consumer terminal show:
+# ☠️  [DLQ DEMO] Malformed JSON detected!
+# ☠️  Message rejected → dead.letter.queue (total DLQ: 1)
+# ☠️  Message rejected → dead.letter.queue (total DLQ: 2)
+# ... up to 5
+
+# Step 6 — Verify
+docker exec -it rabbitmq rabbitmqadmin list queues --username=admin --password=password
+# dead.letter.queue → 5 ✅
+
+# Step 7 — Show in RabbitMQ UI
+# http://localhost:15672 → Queues → dead.letter.queue → Get Messages
+# Shows the broken payload: { this is broken json !!!
+```
+
+---
+
+## After demo — restore to clean state:
+
+```bash
+# Remove TTL from queues.ts (if you added it for Case 1)
+# Delete all queues
+docker exec -it rabbitmq rabbitmqadmin delete queue name=urgent.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=batch.queue --username=admin --password=password
+docker exec -it rabbitmq rabbitmqadmin delete queue name=dead.letter.queue --username=admin --password=password
+
+# Clear MongoDB
+mongosh
+use orchestrator
+db.routinghistories.deleteMany({})
+exit
+
+# Restart everything fresh for final benchmark
+```

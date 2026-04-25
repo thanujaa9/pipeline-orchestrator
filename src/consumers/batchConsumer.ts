@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import { connectMongo, RoutingHistoryModel } from '../db/mongo'
 import { config } from '../config/index'
+import { QUEUE_CONFIG } from '../config/queues'
 
 /**
  * Batch Consumer
@@ -78,15 +79,11 @@ export async function startBatchConsumer(): Promise<void> {
   const connection = await amqplib.connect(config.RABBITMQ_URL)
   const channel    = await (connection as any).createChannel()
 
-  await channel.assertQueue('batch.queue', {
-    durable: true,
-    arguments: {
-      'x-max-priority':            1,
-      'x-dead-letter-exchange':    '',
-      'x-dead-letter-routing-key': 'dead.letter.queue',
-      'x-message-ttl':             60000,
-    },
-  })
+  // Use shared config — guarantees same args as orchestrator
+  await channel.assertQueue(
+    QUEUE_CONFIG.batch.name,
+    QUEUE_CONFIG.batch.options,
+  )
 
   // prefetch(10) = pull up to 10 messages at once for batch processing
   channel.prefetch(BATCH_SIZE)
@@ -130,7 +127,7 @@ export async function startBatchConsumer(): Promise<void> {
     }
   }
 
-  channel.consume('batch.queue', async (msg: any) => {
+  channel.consume(QUEUE_CONFIG.batch.name, async (msg: any) => {
     if (!msg) return
 
     const message = JSON.parse(msg.content.toString())
@@ -158,5 +155,4 @@ export async function startBatchConsumer(): Promise<void> {
   })
 }
 
-// Run if called directly
-startBatchConsumer().catch(console.error)
+// ✅ NO self-invocation here — consumerManager.ts is the entry point

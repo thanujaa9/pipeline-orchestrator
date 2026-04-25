@@ -20,7 +20,7 @@ import amqplib from 'amqplib'
 import mongoose from 'mongoose'
 import { connectMongo, RoutingHistoryModel } from '../db/mongo'
 
-const TOTAL_MESSAGES = 15000
+const TOTAL_MESSAGES = 5000   // ← changed from 15000 to match bulkProducer
 const BATCH_SIZE     = 100
 const BENCHMARK_ID   = `naive-${Date.now()}`
 
@@ -79,7 +79,7 @@ async function runNaiveSystem() {
   const latencies: number[] = []
 
   for (let i = 1; i <= TOTAL_MESSAGES; i++) {
-    const group     = i % 4
+    const group      = i % 4
     const isCritical = group !== 3
 
     const message = {
@@ -116,8 +116,8 @@ async function runNaiveSystem() {
     await RoutingHistoryModel.create({
       messageId:       message.id,
       timestamp:       new Date().toISOString(),
-      matchedRule:     'none',           // ← No rule matched — naive system
-      targetQueue:     'naive.queue',    // ← Single queue
+      matchedRule:     'none',
+      targetQueue:     'naive.queue',
       latencyMs,
       benchmarkId:     BENCHMARK_ID,
       isCritical:      message.isCritical,
@@ -142,11 +142,6 @@ async function runNaiveSystem() {
   const sorted       = [...latencies].sort((a, b) => a - b)
   const avg          = latencies.reduce((a, b) => a + b, 0) / latencies.length
   const p95          = sorted[Math.ceil(0.95 * sorted.length) - 1]
-
-  // Priority accuracy for naive system
-  // Critical messages go to naive.queue — but so does everything else
-  // Accuracy = 0% because there's no priority separation
-  const criticalCount = latencies.filter((_, i) => i % 4 !== 3).length
   const naiveAccuracy = 0  // By definition — no routing means no priority
 
   await producer.disconnect()
@@ -161,16 +156,16 @@ async function runNaiveSystem() {
   console.log(`✅ ${TOTAL_MESSAGES.toLocaleString()} messages sent in ${totalSeconds.toFixed(2)} seconds`)
   console.log(``)
   console.log(`📊 NAIVE SYSTEM RESULTS:`)
-  console.log(`   Avg latency:      ${avg.toFixed(2)} ms`)
-  console.log(`   p95 latency:      ${p95} ms`)
-  console.log(`   Throughput:       ${Math.floor(TOTAL_MESSAGES / totalSeconds).toLocaleString()} msg/sec`)
+  console.log(`   Avg latency:       ${avg.toFixed(2)} ms`)
+  console.log(`   p95 latency:       ${p95} ms`)
+  console.log(`   Throughput:        ${Math.floor(TOTAL_MESSAGES / totalSeconds).toLocaleString()} msg/sec`)
   console.log(`   Priority accuracy: ${naiveAccuracy}%  ← No routing = no priority`)
   console.log(`   Queue used:        naive.queue (single, FIFO, no priority)`)
   console.log(``)
   console.log(`🔑 Benchmark ID: ${BENCHMARK_ID}`)
   console.log(``)
-  console.log(`👉 Now run the smart system report to compare:`)
-  console.log(`   npx ts-node src/benchmark/benchmarkReport.ts`)
+  console.log(`👉 Now run the comparison report:`)
+  console.log(`   npx ts-node src/benchmark/comparisonReport.ts <smartId> ${BENCHMARK_ID}`)
 
   await mongoose.disconnect()
 }

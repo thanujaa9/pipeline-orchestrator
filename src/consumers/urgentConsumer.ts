@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import { connectMongo, RoutingHistoryModel } from '../db/mongo'
 import { config } from '../config/index'
+import { QUEUE_CONFIG } from '../config/queues'
 
 /**
  * Urgent Consumer
@@ -18,10 +19,9 @@ async function processUrgentMessage(message: any): Promise<void> {
   if (message.amount)    console.log(`   Amount:   $${message.amount}`)
   if (message.riskScore) console.log(`   Risk:     ${message.riskScore}`)
 
-  // Simulate processing based on message type
   if (message.type === 'fraud') {
     console.log(`   🔍 Action: Running fraud detection algorithm...`)
-    await new Promise(r => setTimeout(r, 100)) // simulate fraud check
+    await new Promise(r => setTimeout(r, 100))
     console.log(`   ✅ Action: Fraud alert raised — account flagged`)
 
   } else if (message.type === 'payment' && message.amount > 10000) {
@@ -42,7 +42,6 @@ async function processUrgentMessage(message: any): Promise<void> {
 
   const processingTime = Date.now() - startTime
 
-  // Update routing history in MongoDB — mark as processed
   await RoutingHistoryModel.findOneAndUpdate(
     { messageId: message.id },
     {
@@ -63,50 +62,72 @@ export async function startUrgentConsumer(): Promise<void> {
 
   console.log('🚀 Starting Urgent Consumer...')
 
-  // Connect to RabbitMQ
   const connection = await amqplib.connect(config.RABBITMQ_URL)
   const channel    = await (connection as any).createChannel()
 
-  // Assert queue — safe even if already exists
-  await channel.assertQueue('urgent.queue', {
-    durable: true,
-    arguments: {
-      'x-max-priority':            10,
-      'x-dead-letter-exchange':    '',
-      'x-dead-letter-routing-key': 'dead.letter.queue',
-      'x-message-ttl':             30000,
-    },
-  })
+  await channel.assertQueue(
+    QUEUE_CONFIG.urgent.name,
+    QUEUE_CONFIG.urgent.options,
+  )
 
-  // prefetch(1) = process ONE message at a time
-  // Don't take next message until current one is acknowledged
   channel.prefetch(1)
 
   console.log('✅ Urgent Consumer ready — listening on urgent.queue')
   console.log('   Processing: payments, fraud alerts, high-risk transactions\n')
 
   let processedCount = 0
+  let dlqCount       = 0
 
-  channel.consume('urgent.queue', async (msg: any) => {
+  channel.consume(QUEUE_CONFIG.urgent.name, async (msg: any) => {
     if (!msg) return
 
-    try {
-      const message = JSON.parse(msg.content.toString())
-      await processUrgentMessage(message)
+    // ── Always log raw content so we can see what arrived ────
+    const raw = msg.content.toString()
+    console.log(`\n📨 Raw message received (${raw.length} bytes): ${raw.substring(0, 80)}${raw.length > 80 ? '...' : ''}`)
 
-      // Acknowledge — tell RabbitMQ this message is done
+    try {
+      // ── Validate it's parseable JSON ──────────────────────
+      let message: any
+      try {
+        message = JSON.parse(raw)
+      } catch (parseError: any) {
+        // JSON parse failed — this is a broken/malformed message
+        console.error(`\n☠️  [DLQ DEMO] Malformed JSON detected!`)
+        console.error(`   Raw content: ${raw}`)
+        console.error(`   Parse error: ${parseError.message}`)
+        console.error(`   Action: Sending to dead.letter.queue via nack...`)
+        channel.nack(msg, false, false)  // false = don't requeue → goes to DLQ
+        dlqCount++
+        console.error(`   ☠️  Message rejected → dead.letter.queue (total DLQ: ${dlqCount})`)
+        return
+      }
+
+      // ── Validate required fields exist ────────────────────
+      if (!message.id || !message.type) {
+        console.error(`\n☠️  [DLQ DEMO] Missing required fields!`)
+        console.error(`   Message: ${JSON.stringify(message)}`)
+        console.error(`   Action: Sending to dead.letter.queue via nack...`)
+        channel.nack(msg, false, false)
+        dlqCount++
+        console.error(`   ☠️  Message rejected → dead.letter.queue (total DLQ: ${dlqCount})`)
+        return
+      }
+
+      // ── Normal processing ─────────────────────────────────
+      await processUrgentMessage(message)
       channel.ack(msg)
       processedCount++
-      console.log(`   📊 Total processed by urgent-consumer: ${processedCount}`)
+      console.log(`   📊 Total processed: ${processedCount} | DLQ rejections: ${dlqCount}`)
 
     } catch (error: any) {
-      console.error(`   ❌ Failed to process message: ${error.message}`)
-      // Negative acknowledge — put message back in queue
-      channel.nack(msg, false, false) // false = don't requeue → goes to DLQ
+      console.error(`\n❌ Unexpected error processing message: ${error.message}`)
+      console.error(`   Sending to dead.letter.queue...`)
+      channel.nack(msg, false, false)
+      dlqCount++
+      console.error(`   ☠️  Message rejected → dead.letter.queue (total DLQ: ${dlqCount})`)
     }
   })
 
-  // Handle connection close
   process.on('SIGINT', async () => {
     console.log('\n⚠️  Urgent Consumer shutting down...')
     await channel.close()
@@ -115,5 +136,4 @@ export async function startUrgentConsumer(): Promise<void> {
   })
 }
 
-// Run if called directly
-startUrgentConsumer().catch(console.error)
+// ✅ NO self-invocation — consumerManager.ts is the entry point

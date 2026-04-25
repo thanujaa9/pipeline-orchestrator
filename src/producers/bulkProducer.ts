@@ -21,7 +21,7 @@ import { Message } from '../models/message.model'
  */
 
 // ── Configuration ─────────────────────────────────────────────
-const TOTAL_MESSAGES = 15000   // Change to 20000 for larger test
+const TOTAL_MESSAGES = 5000   // Change to 20000 for larger test
 const BATCH_SIZE     = 100     // Messages per Kafka send call
 const BENCHMARK_ID   = `bench-${Date.now()}`   // Unique ID for this run
 
