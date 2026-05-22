@@ -18,7 +18,7 @@
 
 | Document | Link |
 |---|---|
-| 📘 Full Capstone Report | [View Report (PDF)]([./docs/Capstone_Report_final.pdf](https://drive.google.com/file/d/12z3Wp9PDtWA2pbhtSp3uYTW6mBsILhni/view?usp=sharing)) |
+| 📘 Full Capstone Report | [View Report (PDF)]((https://drive.google.com/file/d/12z3Wp9PDtWA2pbhtSp3uYTW6mBsILhni/view?usp=sharing)) |
 | 📊 Presentation Slides | [View Slides (PDF)](https://drive.google.com/file/d/1e-1nxPRKb7mVfNQJFC-QjCpEYN-IWUmq/view?usp=sharing) |
 | 📝 Publication | *Pipeline Orchestrator: A Content-Based Priority Message Routing System* — **Computer Standards & Interfaces, Elsevier** (Impact Factor: 3.1, Under Revision) |
 
@@ -45,9 +45,11 @@ Modern event-driven systems route all messages through a single FIFO queue, trea
 ---
 
 ## 🏗️ Architecture
+<img width="472" height="540" alt="Screenshot 2026-05-22 at 6 36 31 PM" src="https://github.com/user-attachments/assets/fbf7281d-b15c-4684-8cf5-b635b56bb307" />
+
 
 ```
-<img width="472" height="540" alt="image" src="https://github.com/user-attachments/assets/b149723f-37db-4afd-8b42-4a5c81f151ae" />
+
 
 
 The architecture is organised into four independent layers — **Ingestion → Orchestration → Routing → Persistence & Monitoring** — each of which can be scaled or replaced without affecting the others.
